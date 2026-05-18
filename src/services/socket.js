@@ -419,6 +419,55 @@ const startSock = async (phoneOverride = null) => {
     const senderPhone = senderJid.replace(/@.*$/, '').replace(/\D/g, '');
     logger.info(`📞 [FILTRO 3] Mensagem válida de: ${senderPhone} (JID: ${senderJid})`);
 
+    // 🚨 INTEGRAÇÃO COM N8N: Se N8N_WEBHOOK_URL estiver configurada no Railway, desvia o fluxo para o n8n
+    const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || "https://n8n-production-e19d.up.railway.app/webhook/d10aac8e-455d-4345-94a3-54a33bec56ff";
+    if (N8N_WEBHOOK_URL) {
+      logger.info(`📡 [N8N] Encaminhando mensagem de ${senderPhone} para o n8n...`);
+      
+      const text = incomingMessage.message?.conversation ||
+        incomingMessage.message?.extendedTextMessage?.text ||
+        '[Mídia ou Outro Tipo]';
+        
+      const webhookPayload = {
+        client_id: CLIENT_ID,
+        instance_phone: currentPhone,
+        sender: senderJid,
+        phone: senderJid, // Conveniência para compatibilidade
+        pushName: incomingMessage.pushName || 'Desconhecido',
+        message_id: incomingMessage.key.id,
+        text: text,
+        raw_message: incomingMessage
+      };
+
+      // Dispara para o n8n
+      axios.post(N8N_WEBHOOK_URL, webhookPayload)
+        .then(() => logger.info(`✅ [N8N] Evento encaminhado com sucesso`))
+        .catch((e) => logger.error('❌ [N8N] Falha ao enviar evento para o n8n:', e.message));
+
+      // Também notificamos o Laravel para registrar a mensagem recebida no painel
+      const messageType = getContentType(incomingMessage.message) || 'unknown';
+      const pushName = incomingMessage.pushName || null;
+
+      const laravelPayload = {
+        client_id: CLIENT_ID,
+        phone: senderJid,
+        is_lid: senderJid.endsWith('@lid'),
+        instance_phone: currentPhone,
+        message: text,
+        ai_disabled: true, // Tratado externamente (pelo n8n)
+        message_type: messageType,
+        push_name: pushName,
+        message_id: incomingMessage.key.id
+      };
+
+      logger.info(`📡 [WEBHOOK] Enviando log de entrada para o Laravel`, { url: WEBHOOK_URL, phone: laravelPayload.phone });
+      axios.post(WEBHOOK_URL, laravelPayload)
+        .then(() => logger.info(`✅ [WEBHOOK] Log enviado com sucesso para o Laravel`))
+        .catch((e) => logger.error('❌ [WEBHOOK] Erro ao enviar log para o Laravel:', e.message));
+
+      return; // Interrompe para não usar a OpenAI interna
+    }
+
 
     // 🚨 1. VERIFICAÇÃO DE STATUS (COM CACHE)
     logger.info(`🔍 Verificando status da IA para ${senderPhone}...`);
