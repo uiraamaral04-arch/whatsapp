@@ -442,7 +442,17 @@ const startSock = async (phoneOverride = null) => {
       // Dispara para o n8n
       axios.post(N8N_WEBHOOK_URL, webhookPayload)
         .then(() => logger.info(`✅ [N8N] Evento encaminhado com sucesso`))
-        .catch((e) => logger.error('❌ [N8N] Falha ao enviar evento para o n8n:', e.message));
+        .catch((e) => {
+          const status = e.response?.status;
+          const statusText = e.response?.statusText;
+          const responseData = e.response?.data ? JSON.stringify(e.response.data) : '';
+          
+          if (status === 404) {
+            logger.warn(`⚠️ [N8N] Erro 404: O n8n não está ouvindo eventos de teste no momento. No painel do n8n, clique em "Listen for test event" (ou "Test step") antes de enviar a mensagem, ou ative (Active) o workflow de produção.`);
+          } else {
+            logger.error(`❌ [N8N] Falha ao enviar evento para o n8n. Status: ${status || 'N/A'} (${statusText || 'N/A'}). Detalhes: ${responseData || e.message}`);
+          }
+        });
 
       // Também notificamos o Laravel para registrar a mensagem recebida no painel
       const messageType = getContentType(incomingMessage.message) || 'unknown';
