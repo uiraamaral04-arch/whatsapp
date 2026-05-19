@@ -9,6 +9,7 @@
     "get-token:install": "npm install -g @railway/cli && node scripts/getRailwayToken.js"
   },
   "dependencies": {
+    "@google/genai": "^0.1.1",
     "@hapi/boom": "^10.0.1",
     "@whiskeysockets/baileys": "^6.6.0",
     "axios": "^1.6.0",
