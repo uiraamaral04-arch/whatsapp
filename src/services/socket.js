@@ -564,10 +564,8 @@ const startSock = async (phoneOverride = null) => {
   });
   sock.ev.on("creds.update", saveCreds);
 
-  // 🗺️ Listener para popular o mapa LID → JID real
-  // O WhatsApp usa LIDs no protocolo multi-device. Quando contatos chegam,
-  // guardamos o mapeamento LID → JID para resolver mensagens @lid.
-  sock.ev.on('contacts.upsert', (contacts) => {
+  // 🗺️ Listener para popular o mapa LID → JID real e sincronizar com o Laravel
+  sock.ev.on('contacts.upsert', async (contacts) => {
     let novos = 0;
     for (const contact of contacts) {
       if (contact.lid && contact.id) {
@@ -575,6 +573,30 @@ const startSock = async (phoneOverride = null) => {
         const jidValue = contact.id.endsWith('@s.whatsapp.net') ? contact.id : `${contact.id}@s.whatsapp.net`;
         lidToJidMap.set(lidKey, jidValue);
         novos++;
+
+        // 🚀 ENVIAR VÍNCULO PARA O LARAVEL
+        try {
+          const lidPuro = contact.lid.split('@')[0];
+          const phonePuro = contact.id.split('@')[0];
+          const syncLidUrl = WEBHOOK_URL.replace('/webhook', '/sync-lid');
+
+          logger.info(`📡 [LID Sync] Notificando Laravel sobre vínculo LID: ${lidPuro} ↔️ ${phonePuro}`);
+
+          axios.post(syncLidUrl, {
+            client_id: CLIENT_ID,
+            whatsapp_lid: lidPuro,
+            whatsapp_phone: phonePuro
+          }, {
+            headers: {
+              'X-API-Token': WH_API_TOKEN
+            }
+          })
+          .then(() => logger.info(`✅ [LID Sync] Vínculo enviado com sucesso para o Laravel: ${lidPuro} ↔️ ${phonePuro}`))
+          .catch((err) => logger.error(`❌ [LID Sync] Erro no endpoint do Laravel: ${err.message}`));
+
+        } catch (syncErr) {
+          logger.error(`❌ [LID Sync] Falha ao preparar requisição de sincronização: ${syncErr.message}`);
+        }
       }
     }
     if (novos > 0) {
