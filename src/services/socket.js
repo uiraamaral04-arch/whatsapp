@@ -12,7 +12,7 @@ const path = require("path");
 const axios = require('axios');
 const NodeCache = require("node-cache");
 const logger = require('../config/logger');
-const { GoogleGenAI } = require('@google/genai');
+const { OpenAI } = require('openai');
 const { extractDataForAI } = require('../utils/ai_processor');
 const { getContentType } = require('@whiskeysockets/baileys');
 
@@ -29,9 +29,9 @@ const AI_STATUS_URL = process.env.AI_STATUS_URL;
 const WH_API_TOKEN = process.env.WH_API_TOKEN;
 const STATUS_CACHE_TTL = 30; // 🚨 NOVO: Cache de 30 segundos
 
-// 🤖 Configurações do Gemini (Substituindo OpenAI)
-const GEMINI_MODEL = process.env.GEMINI_MODEL || process.env.OPENAI_MODEL || 'gemini-2.5-flash';
-const GEMINI_TIMEOUT = parseInt(process.env.OPENAI_TIMEOUT) * 1000 || 30000;
+// 🤖 Configurações da OpenAI
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5-nano'; // Modelo de custo otimizado
+const OPENAI_TIMEOUT = parseInt(process.env.OPENAI_TIMEOUT) * 1000 || 30000;
 
 // 🎭 Contexto Estático (Persona da IA)
 const AI_SYSTEM_PROMPT = process.env.AI_SYSTEM_PROMPT || "Você é um assistente profissional da Olika, otimizado para custo. Sua análise é baseada APENAS no texto que você recebe. Se houver mídia que não pôde ser processada, avise o usuário educadamente.";
@@ -39,10 +39,10 @@ const AI_SYSTEM_PROMPT = process.env.AI_SYSTEM_PROMPT || "Você é um assistente
 // 📋 Contexto Dinâmico (URL para buscar dados do cliente)
 const CUSTOMER_CONTEXT_URL = process.env.CUSTOMER_CONTEXT_URL;
 
-// Inicialização oficial do SDK do Gemini do Google
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  timeout: GEMINI_TIMEOUT
+// Inicialização da OpenAI (para o GPT-5-nano ou modelo configurado)
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  timeout: OPENAI_TIMEOUT
 });
 
 const msgRetryCounterCache = new NodeCache();
@@ -303,11 +303,6 @@ const startSock = async (phoneOverride = null) => {
         type: 'connection_update',
         instance_phone: currentPhone,
         status: 'CONNECTED'
-      }, {
-        headers: {
-          'X-Olika-Token': WH_API_TOKEN,
-          'X-Webhook-Token': WH_API_TOKEN
-        }
       }).catch(() => { });
     }
 
@@ -332,11 +327,6 @@ const startSock = async (phoneOverride = null) => {
         type: 'connection_update',
         instance_phone: currentPhone,
         status: 'DISCONNECTED'
-      }, {
-        headers: {
-          'X-Olika-Token': WH_API_TOKEN,
-          'X-Webhook-Token': WH_API_TOKEN
-        }
       }).catch(() => { });
 
 
@@ -350,11 +340,6 @@ const startSock = async (phoneOverride = null) => {
           type: 'shutdown_alert',
           instance_phone: currentPhone,
           reason: 'PERSISTENT_FAILURE'
-        }, {
-          headers: {
-            'X-Olika-Token': WH_API_TOKEN,
-            'X-Webhook-Token': WH_API_TOKEN
-          }
         }).catch(() => { });
 
         // 2. Limpeza de arquivos de sessão
@@ -404,54 +389,21 @@ const startSock = async (phoneOverride = null) => {
 
     // 🗺️ RESOLUÇÃO DE LID: O WhatsApp usa LIDs no protocolo multi-device
     // Mensagens de números externos chegam com @lid em vez de @s.whatsapp.net
-    // Tentamos resolver primeiro via key.senderPn (injetado pelo Baileys) e depois via mapa local
+    // Tentamos resolver via mapa; se não encontrado, processamos assim mesmo com log
     let senderJid = senderJidRaw;
     if (senderJidRaw && senderJidRaw.endsWith('@lid')) {
-      const senderPn = incomingMessage.key?.senderPn || incomingMessage.senderPn;
-      if (senderPn) {
-        const phonePuro = senderPn.split('@')[0];
-        const resolvedJid = phonePuro.endsWith('@s.whatsapp.net') ? phonePuro : `${phonePuro}@s.whatsapp.net`;
-        
-        logger.info(`🗺️ [LID Key] Resolvido via senderPn ${senderJidRaw} → ${resolvedJid}`);
-        
-        // Alimenta o nosso mapa em memória
-        lidToJidMap.set(senderJidRaw, resolvedJid);
-        
-        // Dispara de forma assíncrona o mapeamento para o Laravel fazer o Merge no banco imediatamente!
-        try {
-          const lidPuro = senderJidRaw.split('@')[0];
-          const cleanPhonePuro = resolvedJid.split('@')[0];
-          const syncLidUrl = WEBHOOK_URL.replace('/webhook', '/sync-lid');
-          
-          logger.info(`📡 [LID Sync Express] Notificando Laravel sobre vínculo express: ${lidPuro} ↔️ ${cleanPhonePuro}`);
-          axios.post(syncLidUrl, {
-            client_id: CLIENT_ID,
-            whatsapp_lid: lidPuro,
-            whatsapp_phone: cleanPhonePuro
-          }, {
-            headers: {
-              'X-API-Token': WH_API_TOKEN
-            }
-          })
-          .then(() => logger.info(`✅ [LID Sync Express] Vínculo enviado com sucesso para o Laravel: ${lidPuro} ↔️ ${cleanPhonePuro}`))
-          .catch((err) => logger.error(`❌ [LID Sync Express] Erro no endpoint do Laravel: ${err.message}`));
-        } catch (syncErr) {
-          logger.error(`❌ [LID Sync Express] Falha ao enviar sincronização express: ${syncErr.message}`);
-        }
-
+      const resolvedJid = lidToJidMap.get(senderJidRaw);
+      if (resolvedJid) {
+        logger.info(`🗺️ [LID] Resolvido ${senderJidRaw} → ${resolvedJid}`);
         senderJid = resolvedJid;
+        // ✅ IMPORTANTE: Se já temos o JID resolvido, NÃO enviamos webhook com LID
+        // Isso evita duplicatas no banco (uma com LID, outra com JID)
       } else {
-        const resolvedJid = lidToJidMap.get(senderJidRaw);
-        if (resolvedJid) {
-          logger.info(`🗺️ [LID Map] Resolvido ${senderJidRaw} → ${resolvedJid}`);
-          senderJid = resolvedJid;
-        } else {
-          // LID não mapeado ainda — processa assim mesmo, usando o LID como identificador
-          // O número no banco será o LID até o contato ser mapeado
-          const pushName = incomingMessage.pushName || 'Desconhecido';
-          logger.warn(`⚠️ [LID] Não mapeado: ${senderJidRaw} (pushName=${pushName}). Processando com LID.`);
-          senderJid = senderJidRaw; // mantém o @lid
-        }
+        // LID não mapeado ainda — processa assim mesmo, usando o LID como identificador
+        // O número no banco será o LID até o contato ser mapeado
+        const pushName = incomingMessage.pushName || 'Desconhecido';
+        logger.warn(`⚠️ [LID] Não mapeado: ${senderJidRaw} (pushName=${pushName}). Processando com LID.`);
+        senderJid = senderJidRaw; // mantém o @lid
       }
     }
 
@@ -467,41 +419,47 @@ const startSock = async (phoneOverride = null) => {
     const senderPhone = senderJid.replace(/@.*$/, '').replace(/\D/g, '');
     logger.info(`📞 [FILTRO 3] Mensagem válida de: ${senderPhone} (JID: ${senderJid})`);
 
-    // 🚨 INTEGRAÇÃO COM N8N: Se N8N_WEBHOOK_URL estiver configurada no Railway (ou via fallback), desvia o fluxo para o n8n
-    const n8nUrl = process.env.N8N_WEBHOOK_URL || "https://n8n-production-e19d.up.railway.app/webhook-test/d10aac8e-455d-4345-94a3-54a33bec56ff";
-    if (n8nUrl) {
-      logger.info(`📡 [N8N] Encaminhando mensagem de ${senderPhone} para o n8n...`);
-      
-      const deQuem = senderJid ? senderJid.split('@')[0] : '';
-      const textoMensagem = incomingMessage.message?.conversation || 
-                            incomingMessage.message?.extendedTextMessage?.text || 
-                            '[Mídia/Outro]';
-        
-      const webhookPayload = {
-        client_id: CLIENT_ID, // Mantido para referência interna
-        instance_phone: currentPhone,
-        number: deQuem, // Apenas o número de telefone puro (ex: 5571999999999)
-        jid: senderJid, // JID completo caso o n8n precise de @s.whatsapp.net ou @lid
-        text: textoMensagem,
-        pushName: incomingMessage.pushName || 'Desconhecido',
-        message_id: incomingMessage.key.id,
-        raw_message: incomingMessage // Mantido para o n8n poder acessar botões, reações, etc. se necessário
-      };
+    // 🚨 NOVO: Atualização automática de nome se o pushName for válido e o banco tiver "Cliente"
+    const pushNameAtual = incomingMessage.pushName || '';
 
-      // Dispara para o n8n
-      axios.post(n8nUrl, webhookPayload)
-        .then(() => logger.info(`🚀 [n8n Webhook] Dados enviados com sucesso para o n8n!`))
-        .catch((e) => {
-          const status = e.response?.status;
-          const statusText = e.response?.statusText;
-          const responseData = e.response?.data ? JSON.stringify(e.response.data) : '';
+    // Lista de nomes genéricos que queremos substituir
+    const nomesGenericos = ['Cliente', 'Desconhecido', 'unknown', '', null];
+
+    // Se o pushName que veio do WhatsApp for válido (não for genérico)
+    if (!nomesGenericos.includes(pushNameAtual)) {
+      
+      // 📋 Busca o contexto atual do cliente para ver o que está salvo no banco
+      getCustomerContext(senderPhone).then(async (dynamicContext) => {
+        
+        // Verifica se o contexto atual diz que o nome do banco é genérico ou se não tem contexto
+        const bancoTemNomeGenerico = nomesGenericos.some(generico => 
+          dynamicContext.includes(`Nome: ${generico}`)
+        ) || dynamicContext === ""; // Se dynamicContext for vazio, o cliente é novo no banco
+
+        if (bancoTemNomeGenerico) {
+          logger.info(`👤 [Auto-Name Update] Nome no banco é genérico, mas WhatsApp trouxe: "${pushNameAtual}". Atualizando Laravel...`);
           
-          if (status === 404) {
-            logger.warn(`⚠️ [n8n Webhook] Erro 404: O n8n não está ouvindo eventos de teste no momento. No painel do n8n, clique em "Listen for test event" (ou "Test step") antes de enviar a mensagem, ou ative (Active) o workflow de produção.`);
-          } else {
-            logger.error(`❌ [n8n Webhook] Erro ao enviar para o n8n. Status: ${status || 'N/A'} (${statusText || 'N/A'}). Detalhes: ${responseData || e.message}`);
+          try {
+            const updateNameUrl = WEBHOOK_URL.replace('/webhook', '/update-name');
+            const cleanIdentifier = senderJid.split('@')[0];
+
+            // Dispara a atualização direto para o Laravel de forma silenciosa
+            await axios.post(updateNameUrl, {
+              number: cleanIdentifier,
+              name: pushNameAtual
+            }, {
+              headers: {
+                'X-API-Token': WH_API_TOKEN
+              },
+              timeout: 3000
+            });
+            
+            logger.info(`✅ [Auto-Name Update] Nome do cliente "${pushNameAtual}" atualizado com sucesso no Laravel!`);
+          } catch (err) {
+            logger.error(`❌ [Auto-Name Update] Falha ao atualizar nome no Laravel: ${err.message}`);
           }
-        });
+        }
+      }).catch((err) => logger.error(`❌ [Auto-Name Update] Erro ao checar contexto: ${err.message}`));
     }
 
 
@@ -534,12 +492,7 @@ const startSock = async (phoneOverride = null) => {
         message_id: incomingMessage.key.id // ID único para deduplicação
       };
       logger.info(`📡 [WEBHOOK] Enviando para Laravel (IA desabilitada)`, { url: WEBHOOK_URL, phone: webhookPayload.phone });
-      axios.post(WEBHOOK_URL, webhookPayload, {
-        headers: {
-          'X-Olika-Token': WH_API_TOKEN,
-          'X-Webhook-Token': WH_API_TOKEN
-        }
-      })
+      axios.post(WEBHOOK_URL, webhookPayload)
         .then(() => logger.info(`✅ [WEBHOOK] Enviado com sucesso para Laravel`))
         .catch((e) => logger.error('❌ [WEBHOOK] Erro ao enviar para Laravel:', e.message));
       return;
@@ -566,12 +519,7 @@ const startSock = async (phoneOverride = null) => {
       message_id: incomingMessage.key.id // ID único para deduplicação
     };
     logger.info(`📡 [WEBHOOK] Enviando para Laravel (IA habilitada - pré-processamento)`, { url: WEBHOOK_URL, phone: webhookPayloadAi.phone });
-    axios.post(WEBHOOK_URL, webhookPayloadAi, {
-      headers: {
-        'X-Olika-Token': WH_API_TOKEN,
-        'X-Webhook-Token': WH_API_TOKEN
-      }
-    })
+    axios.post(WEBHOOK_URL, webhookPayloadAi)
       .then(() => logger.info(`✅ [WEBHOOK] Pré-notificação enviada com sucesso para Laravel`))
       .catch((e) => logger.warn('⚠️ [WEBHOOK] Erro ao pré-notificar Laravel:', e.message));
 
@@ -592,101 +540,22 @@ const startSock = async (phoneOverride = null) => {
         finalUserPrompt = `${dynamicContext}\n\n[Mensagem do Usuário]: ${payload}`;
       }
 
-      // Definição das ferramentas inteligentes no padrão do Gemini (GoogleGenAI)
-      const geminiTools = [
-        {
-          functionDeclarations: [
-            {
-              name: 'atualizar_nome_cliente',
-              description: 'Atualiza o nome do cliente no sistema quando ele disser como quer ser chamado ou informar seu nome.',
-              parameters: {
-                type: 'OBJECT',
-                properties: {
-                  nome: {
-                    type: 'STRING',
-                    description: 'O nome próprio do cliente (ex: Uirã, Carlos, Maria).'
-                  }
-                },
-                required: ['nome']
-              }
-            }
-          ]
-        }
+      const contentForAI = [
+        { role: 'system', content: systemPrompt }, // Persona da IA
+        { role: 'user', content: finalUserPrompt } // Contexto + Mensagem do usuário
       ];
 
-      // 3. CHAMADA OFICIAL PARA O GEMINI com suporte a Ferramentas
-      const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: finalUserPrompt,
-        config: {
-          systemInstruction: systemPrompt,
-          tools: geminiTools
-        }
+      // 3. CHAMADA FINAL PARA O GPT (modelo configurado)
+      const response = await openai.chat.completions.create({
+        model: OPENAI_MODEL,
+        messages: contentForAI,
       });
 
-      const functionCalls = response.functionCalls;
-      let replyText = response.text;
+      const replyText = response.choices[0].message.content;
 
-      // Se o Gemini decidiu chamar a ferramenta para atualizar o nome do cliente
-      if (functionCalls && functionCalls.length > 0) {
-        for (const funcCall of functionCalls) {
-          if (funcCall.name === 'atualizar_nome_cliente') {
-            try {
-              const args = funcCall.args;
-              const novoNome = args.nome;
-
-              logger.info(`👤 [Gemini Tool] Executando tool atualizar_nome_cliente para ${senderJid} → ${novoNome}`);
-
-              // Envia requisição POST para o Laravel
-              const updateNameUrl = WEBHOOK_URL.replace('/webhook', '/update-name');
-              const cleanIdentifier = senderJid.split('@')[0];
-
-              await axios.post(updateNameUrl, {
-                number: cleanIdentifier,
-                name: novoNome
-              }, {
-                headers: {
-                  'X-API-Token': WH_API_TOKEN
-                }
-              });
-
-              logger.info(`✅ [Gemini Tool] Nome atualizado com sucesso no Laravel: ${novoNome}`);
-
-              // Follow-up: Fornece o resultado da execução da ferramenta para o Gemini gerar a resposta final sabendo que deu certo
-              const secondResponse = await ai.models.generateContent({
-                model: GEMINI_MODEL,
-                contents: [
-                  { role: 'user', parts: [{ text: finalUserPrompt }] },
-                  { role: 'model', parts: [{ functionCalls: [funcCall] }] },
-                  {
-                    role: 'user',
-                    parts: [
-                      {
-                        functionResponse: {
-                          name: 'atualizar_nome_cliente',
-                          response: { success: true, message: 'Nome salvo no banco com sucesso!' }
-                        }
-                      }
-                    ]
-                  }
-                ],
-                config: {
-                  systemInstruction: systemPrompt
-                }
-              });
-
-              replyText = secondResponse.text;
-
-            } catch (toolErr) {
-              logger.error(`❌ [Gemini Tool] Erro ao executar ferramenta atualizar_nome_cliente: ${toolErr.message}`);
-            }
-          }
-        }
-      }
-
-      // 4. RESPOSTA AO USUÁRIO
+      // 4. RESPOSTA AO USUÁRIO (A função sendMessage agora é robusta)
       await sendMessage(senderJid, replyText);
-      logger.info(`✅ Resposta do Gemini enviada para ${senderJid}`);
+      logger.info(`✅ Resposta da IA enviada para ${senderJid}`);
       // (webhook já enviado antes do try, não duplicar)
 
     } catch (error) {
@@ -701,8 +570,10 @@ const startSock = async (phoneOverride = null) => {
   });
   sock.ev.on("creds.update", saveCreds);
 
-  // 🗺️ Listener para popular o mapa LID → JID real e sincronizar com o Laravel
-  const handleContacts = async (contacts) => {
+  // 🗺️ Listener para popular o mapa LID → JID real
+  // O WhatsApp usa LIDs no protocolo multi-device. Quando contatos chegam,
+  // guardamos o mapeamento LID → JID para resolver mensagens @lid.
+  sock.ev.on('contacts.upsert', (contacts) => {
     let novos = 0;
     for (const contact of contacts) {
       if (contact.lid && contact.id) {
@@ -710,40 +581,13 @@ const startSock = async (phoneOverride = null) => {
         const jidValue = contact.id.endsWith('@s.whatsapp.net') ? contact.id : `${contact.id}@s.whatsapp.net`;
         lidToJidMap.set(lidKey, jidValue);
         novos++;
- 
-        // 🚀 ENVIAR VÍNCULO PARA O LARAVEL
-        try {
-          const lidPuro = contact.lid.split('@')[0];
-          const phonePuro = contact.id.split('@')[0];
-          const syncLidUrl = WEBHOOK_URL.replace('/webhook', '/sync-lid');
- 
-          logger.info(`📡 [LID Sync] Notificando Laravel sobre vínculo LID: ${lidPuro} ↔️ ${phonePuro}`);
- 
-          axios.post(syncLidUrl, {
-            client_id: CLIENT_ID,
-            whatsapp_lid: lidPuro,
-            whatsapp_phone: phonePuro
-          }, {
-            headers: {
-              'X-API-Token': WH_API_TOKEN
-            }
-          })
-          .then(() => logger.info(`✅ [LID Sync] Vínculo enviado com sucesso para o Laravel: ${lidPuro} ↔️ ${phonePuro}`))
-          .catch((err) => logger.error(`❌ [LID Sync] Erro no endpoint do Laravel: ${err.message}`));
- 
-        } catch (syncErr) {
-          logger.error(`❌ [LID Sync] Falha ao preparar requisição de sincronização: ${syncErr.message}`);
-        }
       }
     }
     if (novos > 0) {
       logger.info(`🗺️ [LID MAP] ${novos} contato(s) mapeados. Total no mapa: ${lidToJidMap.size}`);
     }
-  };
+  });
 
-  sock.ev.on('contacts.upsert', handleContacts);
-  sock.ev.on('contacts.update', handleContacts);
- 
   globalSock = sock;
   return sock;
 };
