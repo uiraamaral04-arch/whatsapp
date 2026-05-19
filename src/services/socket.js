@@ -398,6 +398,23 @@ const startSock = async (phoneOverride = null) => {
         senderJid = resolvedJid;
         // ✅ IMPORTANTE: Se já temos o JID resolvido, NÃO enviamos webhook com LID
         // Isso evita duplicatas no banco (uma com LID, outra com JID)
+        
+        // 🚨 AJUSTE DE TOKEN DEDICADO NO SYNC-LID EXPRESS
+        const lidPuro = senderJidRaw.split('@')[0];
+        const cleanPhonePuro = resolvedJid.split('@')[0];
+        const syncLidUrl = WEBHOOK_URL.replace('/webhook', '/sync-lid');
+        
+        logger.info(`🗺️ [LID Sync Express] Sincronizando vínculo: LID ${lidPuro} <-> Telefone ${cleanPhonePuro}`);
+        axios.post(syncLidUrl, {
+          client_id: CLIENT_ID,
+          lid: lidPuro,
+          phone: cleanPhonePuro,
+          token: 'olika_socket_secure_token_55b91cf8e2c0e81b' // ✅ Injeta no corpo
+        }, {
+          headers: {
+            'X-API-Token': WH_API_TOKEN || 'olika_socket_secure_token_55b91cf8e2c0e81b' // ✅ Injeta no Header
+          }
+        }).catch((e) => logger.error(`❌ [LID Sync Express] Erro ao sincronizar LID: ${e.message}`));
       } else {
         // LID não mapeado ainda — processa assim mesmo, usando o LID como identificador
         // O número no banco será o LID até o contato ser mapeado
@@ -483,10 +500,11 @@ const startSock = async (phoneOverride = null) => {
             // Dispara a atualização direto para o Laravel de forma silenciosa
             await axios.post(updateNameUrl, {
               number: cleanIdentifier,
-              name: pushNameAtual
+              name: pushNameAtual,
+              token: WH_API_TOKEN || 'olika_socket_secure_token_55b91cf8e2c0e81b'
             }, {
               headers: {
-                'X-API-Token': WH_API_TOKEN
+                'X-API-Token': WH_API_TOKEN || 'olika_socket_secure_token_55b91cf8e2c0e81b'
               },
               timeout: 3000
             });
@@ -612,16 +630,36 @@ const startSock = async (phoneOverride = null) => {
   // guardamos o mapeamento LID → JID para resolver mensagens @lid.
   sock.ev.on('contacts.upsert', (contacts) => {
     let novos = 0;
+    const syncLidUrl = WEBHOOK_URL.replace('/webhook', '/sync-lid');
+    
     for (const contact of contacts) {
       if (contact.lid && contact.id) {
         const lidKey = contact.lid.endsWith('@lid') ? contact.lid : `${contact.lid}@lid`;
         const jidValue = contact.id.endsWith('@s.whatsapp.net') ? contact.id : `${contact.id}@s.whatsapp.net`;
-        lidToJidMap.set(lidKey, jidValue);
-        novos++;
+        
+        if (!lidToJidMap.has(lidKey)) {
+          lidToJidMap.set(lidKey, jidValue);
+          novos++;
+          
+          // 🚨 AJUSTE DE TOKEN DEDICADO NO HANDLE CONTACTS GERAL
+          const lidPuro = lidKey.split('@')[0];
+          const phonePuro = jidValue.split('@')[0];
+          
+          axios.post(syncLidUrl, {
+            client_id: CLIENT_ID,
+            lid: lidPuro,
+            phone: phonePuro,
+            token: 'olika_socket_secure_token_55b91cf8e2c0e81b' // ✅ Injeta no corpo
+          }, {
+            headers: {
+              'X-API-Token': WH_API_TOKEN || 'olika_socket_secure_token_55b91cf8e2c0e81b' // ✅ Injeta no Header
+            }
+          }).catch(() => {});
+        }
       }
     }
     if (novos > 0) {
-      logger.info(`🗺️ [LID MAP] ${novos} contato(s) mapeados. Total no mapa: ${lidToJidMap.size}`);
+      logger.info(`🗺️ [LID MAP & Sync] ${novos} contato(s) mapeados e sincronizados com o Laravel. Total no mapa: ${lidToJidMap.size}`);
     }
   });
 
