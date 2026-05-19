@@ -420,7 +420,7 @@ const startSock = async (phoneOverride = null) => {
     logger.info(`📞 [FILTRO 3] Mensagem válida de: ${senderPhone} (JID: ${senderJid})`);
 
     // 🚨 INTEGRAÇÃO COM N8N: Se N8N_WEBHOOK_URL estiver configurada no Railway, desvia o fluxo para o n8n
-    const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || "https://n8n-production-e19d.up.railway.app/webhook/d10aac8e-455d-4345-94a3-54a33bec56ff";
+    const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || "https://n8n-production-e19d.up.railway.app/webhook-test/d10aac8e-455d-4345-94a3-54a33bec56ff";
     if (N8N_WEBHOOK_URL) {
       logger.info(`📡 [N8N] Encaminhando mensagem de ${senderPhone} para o n8n...`);
       
