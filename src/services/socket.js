@@ -303,6 +303,11 @@ const startSock = async (phoneOverride = null) => {
         type: 'connection_update',
         instance_phone: currentPhone,
         status: 'CONNECTED'
+      }, {
+        headers: {
+          'X-Olika-Token': WH_API_TOKEN,
+          'X-Webhook-Token': WH_API_TOKEN
+        }
       }).catch(() => { });
     }
 
@@ -327,6 +332,11 @@ const startSock = async (phoneOverride = null) => {
         type: 'connection_update',
         instance_phone: currentPhone,
         status: 'DISCONNECTED'
+      }, {
+        headers: {
+          'X-Olika-Token': WH_API_TOKEN,
+          'X-Webhook-Token': WH_API_TOKEN
+        }
       }).catch(() => { });
 
 
@@ -340,6 +350,11 @@ const startSock = async (phoneOverride = null) => {
           type: 'shutdown_alert',
           instance_phone: currentPhone,
           reason: 'PERSISTENT_FAILURE'
+        }, {
+          headers: {
+            'X-Olika-Token': WH_API_TOKEN,
+            'X-Webhook-Token': WH_API_TOKEN
+          }
         }).catch(() => { });
 
         // 2. Limpeza de arquivos de sessão
@@ -519,7 +534,12 @@ const startSock = async (phoneOverride = null) => {
         message_id: incomingMessage.key.id // ID único para deduplicação
       };
       logger.info(`📡 [WEBHOOK] Enviando para Laravel (IA desabilitada)`, { url: WEBHOOK_URL, phone: webhookPayload.phone });
-      axios.post(WEBHOOK_URL, webhookPayload)
+      axios.post(WEBHOOK_URL, webhookPayload, {
+        headers: {
+          'X-Olika-Token': WH_API_TOKEN,
+          'X-Webhook-Token': WH_API_TOKEN
+        }
+      })
         .then(() => logger.info(`✅ [WEBHOOK] Enviado com sucesso para Laravel`))
         .catch((e) => logger.error('❌ [WEBHOOK] Erro ao enviar para Laravel:', e.message));
       return;
@@ -546,7 +566,12 @@ const startSock = async (phoneOverride = null) => {
       message_id: incomingMessage.key.id // ID único para deduplicação
     };
     logger.info(`📡 [WEBHOOK] Enviando para Laravel (IA habilitada - pré-processamento)`, { url: WEBHOOK_URL, phone: webhookPayloadAi.phone });
-    axios.post(WEBHOOK_URL, webhookPayloadAi)
+    axios.post(WEBHOOK_URL, webhookPayloadAi, {
+      headers: {
+        'X-Olika-Token': WH_API_TOKEN,
+        'X-Webhook-Token': WH_API_TOKEN
+      }
+    })
       .then(() => logger.info(`✅ [WEBHOOK] Pré-notificação enviada com sucesso para Laravel`))
       .catch((e) => logger.warn('⚠️ [WEBHOOK] Erro ao pré-notificar Laravel:', e.message));
 
