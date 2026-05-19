@@ -12,7 +12,7 @@ const path = require("path");
 const axios = require('axios');
 const NodeCache = require("node-cache");
 const logger = require('../config/logger');
-const { OpenAI } = require('openai');
+const { GoogleGenAI } = require('@google/genai');
 const { extractDataForAI } = require('../utils/ai_processor');
 const { getContentType } = require('@whiskeysockets/baileys');
 
@@ -29,9 +29,9 @@ const AI_STATUS_URL = process.env.AI_STATUS_URL;
 const WH_API_TOKEN = process.env.WH_API_TOKEN;
 const STATUS_CACHE_TTL = 30; // 🚨 NOVO: Cache de 30 segundos
 
-// 🤖 Configurações da OpenAI
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5-nano'; // Modelo de custo otimizado
-const OPENAI_TIMEOUT = parseInt(process.env.OPENAI_TIMEOUT) * 1000 || 30000;
+// 🤖 Configurações do Gemini (Substituindo OpenAI)
+const GEMINI_MODEL = process.env.GEMINI_MODEL || process.env.OPENAI_MODEL || 'gemini-2.5-flash';
+const GEMINI_TIMEOUT = parseInt(process.env.OPENAI_TIMEOUT) * 1000 || 30000;
 
 // 🎭 Contexto Estático (Persona da IA)
 const AI_SYSTEM_PROMPT = process.env.AI_SYSTEM_PROMPT || "Você é um assistente profissional da Olika, otimizado para custo. Sua análise é baseada APENAS no texto que você recebe. Se houver mídia que não pôde ser processada, avise o usuário educadamente.";
@@ -39,10 +39,10 @@ const AI_SYSTEM_PROMPT = process.env.AI_SYSTEM_PROMPT || "Você é um assistente
 // 📋 Contexto Dinâmico (URL para buscar dados do cliente)
 const CUSTOMER_CONTEXT_URL = process.env.CUSTOMER_CONTEXT_URL;
 
-// Inicialização da OpenAI (para o GPT-5-nano ou modelo configurado)
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  timeout: OPENAI_TIMEOUT
+// Inicialização oficial do SDK do Gemini do Google
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY,
+  timeout: GEMINI_TIMEOUT
 });
 
 const msgRetryCounterCache = new NodeCache();
@@ -567,22 +567,101 @@ const startSock = async (phoneOverride = null) => {
         finalUserPrompt = `${dynamicContext}\n\n[Mensagem do Usuário]: ${payload}`;
       }
 
-      const contentForAI = [
-        { role: 'system', content: systemPrompt }, // Persona da IA
-        { role: 'user', content: finalUserPrompt } // Contexto + Mensagem do usuário
+      // Definição das ferramentas inteligentes no padrão do Gemini (GoogleGenAI)
+      const geminiTools = [
+        {
+          functionDeclarations: [
+            {
+              name: 'atualizar_nome_cliente',
+              description: 'Atualiza o nome do cliente no sistema quando ele disser como quer ser chamado ou informar seu nome.',
+              parameters: {
+                type: 'OBJECT',
+                properties: {
+                  nome: {
+                    type: 'STRING',
+                    description: 'O nome próprio do cliente (ex: Uirã, Carlos, Maria).'
+                  }
+                },
+                required: ['nome']
+              }
+            }
+          ]
+        }
       ];
 
-      // 3. CHAMADA FINAL PARA O GPT (modelo configurado)
-      const response = await openai.chat.completions.create({
-        model: OPENAI_MODEL,
-        messages: contentForAI,
+      // 3. CHAMADA OFICIAL PARA O GEMINI com suporte a Ferramentas
+      const response = await ai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: finalUserPrompt,
+        config: {
+          systemInstruction: systemPrompt,
+          tools: geminiTools
+        }
       });
 
-      const replyText = response.choices[0].message.content;
+      const functionCalls = response.functionCalls;
+      let replyText = response.text;
 
-      // 4. RESPOSTA AO USUÁRIO (A função sendMessage agora é robusta)
+      // Se o Gemini decidiu chamar a ferramenta para atualizar o nome do cliente
+      if (functionCalls && functionCalls.length > 0) {
+        for (const funcCall of functionCalls) {
+          if (funcCall.name === 'atualizar_nome_cliente') {
+            try {
+              const args = funcCall.args;
+              const novoNome = args.nome;
+
+              logger.info(`👤 [Gemini Tool] Executando tool atualizar_nome_cliente para ${senderJid} → ${novoNome}`);
+
+              // Envia requisição POST para o Laravel
+              const updateNameUrl = WEBHOOK_URL.replace('/webhook', '/update-name');
+              const cleanIdentifier = senderJid.split('@')[0];
+
+              await axios.post(updateNameUrl, {
+                number: cleanIdentifier,
+                name: novoNome
+              }, {
+                headers: {
+                  'X-API-Token': WH_API_TOKEN
+                }
+              });
+
+              logger.info(`✅ [Gemini Tool] Nome atualizado com sucesso no Laravel: ${novoNome}`);
+
+              // Follow-up: Fornece o resultado da execução da ferramenta para o Gemini gerar a resposta final sabendo que deu certo
+              const secondResponse = await ai.models.generateContent({
+                model: GEMINI_MODEL,
+                contents: [
+                  { role: 'user', parts: [{ text: finalUserPrompt }] },
+                  { role: 'model', parts: [{ functionCalls: [funcCall] }] },
+                  {
+                    role: 'user',
+                    parts: [
+                      {
+                        functionResponse: {
+                          name: 'atualizar_nome_cliente',
+                          response: { success: true, message: 'Nome salvo no banco com sucesso!' }
+                        }
+                      }
+                    ]
+                  }
+                ],
+                config: {
+                  systemInstruction: systemPrompt
+                }
+              });
+
+              replyText = secondResponse.text;
+
+            } catch (toolErr) {
+              logger.error(`❌ [Gemini Tool] Erro ao executar ferramenta atualizar_nome_cliente: ${toolErr.message}`);
+            }
+          }
+        }
+      }
+
+      // 4. RESPOSTA AO USUÁRIO
       await sendMessage(senderJid, replyText);
-      logger.info(`✅ Resposta da IA enviada para ${senderJid}`);
+      logger.info(`✅ Resposta do Gemini enviada para ${senderJid}`);
       // (webhook já enviado antes do try, não duplicar)
 
     } catch (error) {
