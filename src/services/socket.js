@@ -454,29 +454,6 @@ const startSock = async (phoneOverride = null) => {
             logger.error(`❌ [n8n Webhook] Erro ao enviar para o n8n. Status: ${status || 'N/A'} (${statusText || 'N/A'}). Detalhes: ${responseData || e.message}`);
           }
         });
-
-      // Também notificamos o Laravel para registrar a mensagem recebida no painel
-      const messageType = getContentType(incomingMessage.message) || 'unknown';
-      const pushName = incomingMessage.pushName || null;
-
-      const laravelPayload = {
-        client_id: CLIENT_ID,
-        phone: senderJid,
-        is_lid: senderJid.endsWith('@lid'),
-        instance_phone: currentPhone,
-        message: text,
-        ai_disabled: true, // Tratado externamente (pelo n8n)
-        message_type: messageType,
-        push_name: pushName,
-        message_id: incomingMessage.key.id
-      };
-
-      logger.info(`📡 [WEBHOOK] Enviando log de entrada para o Laravel`, { url: WEBHOOK_URL, phone: laravelPayload.phone });
-      axios.post(WEBHOOK_URL, laravelPayload)
-        .then(() => logger.info(`✅ [WEBHOOK] Log enviado com sucesso para o Laravel`))
-        .catch((e) => logger.error('❌ [WEBHOOK] Erro ao enviar log para o Laravel:', e.message));
-
-      return; // Interrompe para não usar a OpenAI interna
     }
 
 
