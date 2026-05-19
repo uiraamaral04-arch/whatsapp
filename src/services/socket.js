@@ -419,38 +419,39 @@ const startSock = async (phoneOverride = null) => {
     const senderPhone = senderJid.replace(/@.*$/, '').replace(/\D/g, '');
     logger.info(`📞 [FILTRO 3] Mensagem válida de: ${senderPhone} (JID: ${senderJid})`);
 
-    // 🚨 INTEGRAÇÃO COM N8N: Se N8N_WEBHOOK_URL estiver configurada no Railway, desvia o fluxo para o n8n
-    const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || "https://n8n-production-e19d.up.railway.app/webhook-test/d10aac8e-455d-4345-94a3-54a33bec56ff";
-    if (N8N_WEBHOOK_URL) {
+    // 🚨 INTEGRAÇÃO COM N8N: Se N8N_WEBHOOK_URL estiver configurada no Railway (ou via fallback), desvia o fluxo para o n8n
+    const n8nUrl = process.env.N8N_WEBHOOK_URL || "https://n8n-production-e19d.up.railway.app/webhook-test/d10aac8e-455d-4345-94a3-54a33bec56ff";
+    if (n8nUrl) {
       logger.info(`📡 [N8N] Encaminhando mensagem de ${senderPhone} para o n8n...`);
       
-      const text = incomingMessage.message?.conversation ||
-        incomingMessage.message?.extendedTextMessage?.text ||
-        '[Mídia ou Outro Tipo]';
+      const deQuem = senderJid ? senderJid.split('@')[0] : '';
+      const textoMensagem = incomingMessage.message?.conversation || 
+                            incomingMessage.message?.extendedTextMessage?.text || 
+                            '[Mídia/Outro]';
         
       const webhookPayload = {
-        client_id: CLIENT_ID,
+        client_id: CLIENT_ID, // Mantido para referência interna
         instance_phone: currentPhone,
-        sender: senderJid,
-        phone: senderJid, // Conveniência para compatibilidade
+        number: deQuem, // Apenas o número de telefone puro (ex: 5571999999999)
+        jid: senderJid, // JID completo caso o n8n precise de @s.whatsapp.net ou @lid
+        text: textoMensagem,
         pushName: incomingMessage.pushName || 'Desconhecido',
         message_id: incomingMessage.key.id,
-        text: text,
-        raw_message: incomingMessage
+        raw_message: incomingMessage // Mantido para o n8n poder acessar botões, reações, etc. se necessário
       };
 
       // Dispara para o n8n
-      axios.post(N8N_WEBHOOK_URL, webhookPayload)
-        .then(() => logger.info(`✅ [N8N] Evento encaminhado com sucesso`))
+      axios.post(n8nUrl, webhookPayload)
+        .then(() => logger.info(`🚀 [n8n Webhook] Dados enviados com sucesso para o n8n!`))
         .catch((e) => {
           const status = e.response?.status;
           const statusText = e.response?.statusText;
           const responseData = e.response?.data ? JSON.stringify(e.response.data) : '';
           
           if (status === 404) {
-            logger.warn(`⚠️ [N8N] Erro 404: O n8n não está ouvindo eventos de teste no momento. No painel do n8n, clique em "Listen for test event" (ou "Test step") antes de enviar a mensagem, ou ative (Active) o workflow de produção.`);
+            logger.warn(`⚠️ [n8n Webhook] Erro 404: O n8n não está ouvindo eventos de teste no momento. No painel do n8n, clique em "Listen for test event" (ou "Test step") antes de enviar a mensagem, ou ative (Active) o workflow de produção.`);
           } else {
-            logger.error(`❌ [N8N] Falha ao enviar evento para o n8n. Status: ${status || 'N/A'} (${statusText || 'N/A'}). Detalhes: ${responseData || e.message}`);
+            logger.error(`❌ [n8n Webhook] Erro ao enviar para o n8n. Status: ${status || 'N/A'} (${statusText || 'N/A'}). Detalhes: ${responseData || e.message}`);
           }
         });
 
